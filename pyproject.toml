@@ -1,0 +1,41 @@
+[project]
+name = "hotel-comments-crawler"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "xifan", email = "xifan233@163.com" }
+]
+dependencies = [
+    "fake-useragent>=1.5.1",
+    "pandas>=2.2.3",
+    "openpyxl>=3.1.5",
+    "pillow>=11.0.0",
+    "peewee>=3.17.8",
+    "pymysql>=1.1.1",
+    "cryptography>=44.0.0",
+    "tenacity>=9.0.0",
+    "bs4>=0.0.2",
+    "aiohttp>=3.11.11",
+    "python-socks>=2.6.1",
+    "aiohttp-socks>=0.10.1",
+    "requests[socks]>=2.32.3",
+]
+requires-python = ">= 3.8,<3.12"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+dev-dependencies = [
+    "uiautodev>=0.5.0",
+]
+
+[tool.rye.scripts]
+ui = "python -m uiautodev"
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

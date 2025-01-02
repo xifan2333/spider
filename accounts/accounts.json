@@ -1,0 +1,39 @@
+{
+  "accounts": [
+    {
+      "phone": "18829251393",
+      "platform": "ctrip",
+      "cookies": {
+        "cticket": "76E25DE0D7EC93E54A4DA3C319B4AEE4A51C09BDFBF41E68209A3CB98968AC84"
+      },
+      "last_used": "2025-01-01T15:28:06.387445",
+      "fail_count": 0,
+      "is_valid": true,
+      "created_at": "2023-12-28T00:00:00"
+    },
+    {
+      "phone": "15325330417",
+      "platform": "qunar",
+      "cookies": {
+        "QN1": "000139002f1068352318b58e",
+        "ctt_june": "1683616182042##iK3wVKt%2BVhPwawPwasTTaKtOaDP%2BasPNXKfhaRXmESvwWDjNERjOWSPmWRtAiK3siK3saKgsasa8as28WRvnaUPwaUvt"
+      },
+      "last_used": "2024-12-29T14:11:28.611458",
+      "fail_count": 1,
+      "is_valid": true,
+      "created_at": "2023-12-28T00:00:00"
+    },
+    {
+      "phone": "15325330417",
+      "platform": "elong",
+      "cookies": {
+        "QN1": "000139002f1068352318b58e",
+        "ctt_june": "1683616182042##iK3wVKt%2BVhPwawPwasTTaKtOaDP%2BasPNXKfhaRXmESvwWDjNERjOWSPmWRtAiK3siK3saKgsasa8as28WRvnaUPwaUvt"
+      },
+      "last_used": "2025-01-02T12:15:31.073051",
+      "fail_count": 1,
+      "is_valid": true,
+      "created_at": "2023-12-28T00:00:00"
+    }
+  ]
+}
