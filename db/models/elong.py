@@ -1,8 +1,12 @@
 """艺龙酒店数据模型"""
 
 from datetime import datetime
+from typing import Dict, List, Optional
 from peewee import CharField, TextField, IntegerField, FloatField, DateTimeField, ForeignKeyField, BooleanField
 from ..connection import BaseModel
+from utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 class ElongHotel(BaseModel):
     """艺龙酒店模型"""
@@ -41,6 +45,32 @@ class ElongHotel(BaseModel):
     class Meta:
         table_name = 'elong_hotels'
 
+    @classmethod
+    def get_by_id_or_none(cls, hotel_id: str) -> Optional['ElongHotel']:
+        """根据ID获取酒店"""
+        try:
+            return cls.get_by_id(hotel_id)
+        except cls.DoesNotExist:
+            return None
+
+    @classmethod
+    def create_hotel(cls, data: Dict) -> 'ElongHotel':
+        """创建酒店"""
+        data['updated_at'] = datetime.now()
+        return cls.create(**data)
+
+    def update_hotel(self, data: Dict) -> bool:
+        """更新酒店"""
+        try:
+            data['updated_at'] = datetime.now()
+            for key, value in data.items():
+                setattr(self, key, value)
+            self.save()
+            return True
+        except Exception as e:
+            logger.error(f"更新酒店失败: {str(e)}")
+            return False
+
 class ElongComment(BaseModel):
     """艺龙评论模型"""
     comment_id = CharField(primary_key=True)  # 评论ID
@@ -64,5 +94,31 @@ class ElongComment(BaseModel):
     
     class Meta:
         table_name = 'elong_comments'
+
+    @classmethod
+    def get_by_id_or_none(cls, comment_id: str) -> Optional['ElongComment']:
+        """根据ID获取评论"""
+        try:
+            return cls.get_by_id(comment_id)
+        except cls.DoesNotExist:
+            return None
+
+    @classmethod
+    def create_comment(cls, data: Dict) -> 'ElongComment':
+        """创建评论"""
+        data['updated_at'] = datetime.now()
+        return cls.create(**data)
+
+    def update_comment(self, data: Dict) -> bool:
+        """更新评论"""
+        try:
+            data['updated_at'] = datetime.now()
+            for key, value in data.items():
+                setattr(self, key, value)
+            self.save()
+            return True
+        except Exception as e:
+            logger.error(f"更新评论失败: {str(e)}")
+            return False
     
    

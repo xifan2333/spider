@@ -39,7 +39,7 @@ class CtripHotel(BaseModel):
         table_name = "ctrip_hotels"
 
     @classmethod
-    def get_or_none(cls, hotel_id: str) -> Optional['CtripHotel']:
+    def get_by_id_or_none(cls, hotel_id: str) -> Optional['CtripHotel']:
         """根据ID获取酒店，不存在返回None"""
         try:
             return cls.get_by_id(hotel_id)
@@ -47,52 +47,55 @@ class CtripHotel(BaseModel):
             return None
 
     @classmethod
-    def create_from_api(cls, hotel_info: Dict) -> 'CtripHotel':
-        """从API数据创建酒店"""
-        return cls.create(
-            hotel_id=hotel_info['酒店ID'],
-            name=hotel_info['酒店名称'],
-            name_en=hotel_info['酒店英文名称'],
-            address=hotel_info['详细地址'],
-            location_desc=hotel_info['位置描述'],
-            longitude=hotel_info['经度'],
-            latitude=hotel_info['纬度'],
-            star=hotel_info['星级'],
-            tags=hotel_info['酒店标签'],
-            one_sentence_comment=hotel_info['一句话点评'],
-            updated_at=datetime.now()
-        )
-
-    def update_ratings(self, rating_info: Dict) -> bool:
-        """更新酒店评分"""
+    def create_hotel(cls, hotel_data: Dict) -> Optional['CtripHotel']:
+        """创建酒店记录
+        
+        Args:
+            hotel_data: 酒店数据字典
+            
+        Returns:
+            Optional[CtripHotel]: 创建的酒店实例,失败返回None
+        """
         try:
-            self.rating_all = rating_info.get('总评分', 0)
-            self.rating_location = rating_info.get('环境评分', 0)
-            self.rating_facility = rating_info.get('设施评分', 0)
-            self.rating_service = rating_info.get('服务评分', 0)
-            self.rating_room = rating_info.get('卫生评分', 0)
-            self.comment_count = rating_info.get('总评论数', 0)
-            self.comment_tags = rating_info.get('评论标签', '')
-            self.good_comment_count = rating_info.get('好评数', 0)
-            self.bad_comment_count = rating_info.get('差评数', 0)
-            self.good_rate = rating_info.get('好评率', 0)
-            self.updated_at = datetime.now()
+            hotel = cls.create(**hotel_data)
+            logger.info(f"创建酒店成功: {hotel_data.get('hotel_id')}")
+            return hotel
+        except Exception as e:
+            logger.error(f"创建酒店失败: {str(e)}")
+            return None
+
+    def update_hotel(self, hotel_data: Dict) -> bool:
+        """更新酒店记录
+        
+        Args:
+            hotel_data: 酒店数据字典
+            
+        Returns:
+            bool: 更新是否成功
+        """
+        try:
+            hotel_data["updated_at"] = datetime.now()
+            for key, value in hotel_data.items():
+                setattr(self, key, value)
             self.save()
+            logger.info(f"更新酒店成功: {self.hotel_id}")
             return True
         except Exception as e:
-            logger.error(f"更新酒店评分失败: {str(e)}")
+            logger.error(f"更新酒店失败: {str(e)}")
             return False
 
-    def update_ai_comments(self, ai_comment: str, ai_detailed_comment: str) -> bool:
-        """更新AI点评"""
+    def delete_hotel(self) -> bool:
+        """删除酒店记录
+        
+        Returns:
+            bool: 删除是否成功
+        """
         try:
-            self.ai_comment = ai_comment
-            self.ai_detailed_comment = ai_detailed_comment
-            self.updated_at = datetime.now()
-            self.save()
+            self.delete_instance()
+            logger.info(f"删除酒店成功: {self.hotel_id}")
             return True
         except Exception as e:
-            logger.error(f"更新AI点评失败: {str(e)}")
+            logger.error(f"删除酒店失败: {str(e)}")
             return False
 
     def get_comments(self, limit: int = None) -> List['CtripComment']:
@@ -133,7 +136,7 @@ class CtripComment(BaseModel):
         table_name = "ctrip_comments"   
 
     @classmethod
-    def get_or_none(cls, comment_id: str) -> Optional['CtripComment']:
+    def get_by_id_or_none(cls, comment_id: str) -> Optional['CtripComment']:
         """根据ID获取评论，不存在返回None"""
         try:
             return cls.get_by_id(comment_id)
@@ -141,40 +144,55 @@ class CtripComment(BaseModel):
             return None
 
     @classmethod
-    def create_from_api(cls, comment_info: Dict, hotel: CtripHotel) -> 'CtripComment':
-        """从API数据创建评论"""
-        return cls.create(
-            comment_id=comment_info['评论ID'],
-            hotel=hotel,
-            user_name=comment_info['用户名'],
-            user_level=comment_info['用户等级'],
-            user_identity=comment_info['点评身份'],
-            rating=comment_info['评分'],
-            content=comment_info['评论内容'],
-            checkin_time=comment_info['入住时间'],
-            room_type=comment_info['房型'],
-            travel_type=comment_info['出行类型'],
-            source=comment_info['评论来源'],
-            useful_count=comment_info['有用数'],
-            ip_location=comment_info['IP归属地'],
-            images=comment_info['评论图片'],
-            hotel_reply=comment_info['酒店回复'],
-            reply_time=comment_info['回复时间']
-        )
-
-    def update_useful_count(self, count: int) -> bool:
-        """更新点赞数"""
+    def create_comment(cls, comment_data: Dict) -> Optional['CtripComment']:
+        """创建评论记录
+        
+        Args:
+            comment_data: 评论数据字典
+            
+        Returns:
+            Optional[CtripComment]: 创建的评论实例,失败返回None
+        """
         try:
-            self.useful_count = count
+            comment = cls.create(**comment_data)
+            logger.info(f"创建评论成功: {comment_data.get('comment_id')}")
+            return comment
+        except Exception as e:
+            logger.error(f"创建评论失败: {str(e)}")
+            return None
+
+    def update_comment(self, comment_data: Dict) -> bool:
+        """更新评论记录
+        
+        Args:
+            comment_data: 评论数据字典
+            
+        Returns:
+            bool: 更新是否成功
+        """
+        try:
+            for key, value in comment_data.items():
+                setattr(self, key, value)
             self.save()
+            logger.info(f"更新评论成功: {self.comment_id}")
             return True
         except Exception as e:
-            logger.error(f"更新评论点赞数失败: {str(e)}")
+            logger.error(f"更新评论失败: {str(e)}")
             return False
 
-    def get_images(self) -> List[str]:
-        """获取评论图片列表"""
-        return self.images.split(',') if self.images else []
+    def delete_comment(self) -> bool:
+        """删除评论记录
+        
+        Returns:
+            bool: 删除是否成功
+        """
+        try:
+            self.delete_instance()
+            logger.info(f"删除评论成功: {self.comment_id}")
+            return True
+        except Exception as e:
+            logger.error(f"删除评论失败: {str(e)}")
+            return False
 
 class CtripQA(BaseModel):
     """携程问答模型"""
@@ -191,7 +209,7 @@ class CtripQA(BaseModel):
         table_name = "ctrip_qas"
 
     @classmethod
-    def get_or_none(cls, qa_id: str) -> Optional['CtripQA']:
+    def get_by_id_or_none(cls, qa_id: str) -> Optional['CtripQA']:
         """根据ID获取问答，不存在返回None"""
         try:
             return cls.get_by_id(qa_id)
@@ -199,20 +217,52 @@ class CtripQA(BaseModel):
             return None
 
     @classmethod
-    def create_from_api(cls, qa_info: Dict, hotel: CtripHotel) -> 'CtripQA':
-        """从API数据创建问答"""
-        return cls.create(
-            qa_id=qa_info['问题ID'],
-            hotel=hotel,
-            question=qa_info['提问内容'],
-            ask_time=datetime.strptime(qa_info['提问时间'], "%Y-%m-%d %H:%M:%S"),
-            asker=qa_info['提问人'],
-            reply_count=qa_info['回答数量'],
-            replies=qa_info['回答内容']
-        )
+    def create_qa(cls, qa_data: Dict) -> Optional['CtripQA']:
+        """创建问答记录
+        
+        Args:
+            qa_data: 问答数据字典
+            
+        Returns:
+            Optional[CtripQA]: 创建的问答实例,失败返回None
+        """
+        try:
+            qa = cls.create(**qa_data)
+            logger.info(f"创建问答成功: {qa_data.get('qa_id')}")
+            return qa
+        except Exception as e:
+            logger.error(f"创建问答失败: {str(e)}")
+            return None
 
-    def get_replies(self) -> List[str]:
-        """获取回复列表"""
-        if not self.replies:
-            return []
-        return [reply.split('.', 1)[1] for reply in self.replies.split(' ') if '.' in reply] 
+    def update_qa(self, qa_data: Dict) -> bool:
+        """更新问答记录
+        
+        Args:
+            qa_data: 问答数据字典
+            
+        Returns:
+            bool: 更新是否成功
+        """
+        try:
+            for key, value in qa_data.items():
+                setattr(self, key, value)
+            self.save()
+            logger.info(f"更新问答成功: {self.qa_id}")
+            return True
+        except Exception as e:
+            logger.error(f"更新问答失败: {str(e)}")
+            return False
+
+    def delete_qa(self) -> bool:
+        """删除问答记录
+        
+        Returns:
+            bool: 删除是否成功
+        """
+        try:
+            self.delete_instance()
+            logger.info(f"删除问答成功: {self.qa_id}")
+            return True
+        except Exception as e:
+            logger.error(f"删除问答失败: {str(e)}")
+            return False 

@@ -20,7 +20,6 @@ CTRIP_BASE_URL = "https://m.ctrip.com/restapi/soa2/31454/gethotellist"
 CTRIP_COMMENT_URL = "https://m.ctrip.com/restapi/soa2/24626/commentlist"
 CTRIP_QA_URL = "https://m.ctrip.com/webapp/you/askAnswer/ask/askList"
 
-
 # 请求头配置
 HEADERS = {
     "accept": "*/*",
@@ -66,6 +65,10 @@ class CtripSpider(HotelSpiderBase):
         # 初始化代理池
         self.proxy_pool = ProxyPool()
         self.current_proxy = None
+
+        # 统计变量
+        self.total_comments = 0
+        self.saved_comments = 0
 
     
     @request_decorator
@@ -240,125 +243,63 @@ class CtripSpider(HotelSpiderBase):
             logger.error(f"解析问答数据失败: {str(e)}\n{traceback.format_exc()}")
             return []
 
-    def save_hotel(self, hotel_info: Dict) -> bool:
-        """保存酒店数据
-
-        Args:
-            hotel_info: 酒店信息字典
-
-        Returns:
-            bool: 保存成功返回True
-        """
+    def _parse_comment_info(self, comment_data: Dict) -> Dict:
+        """解析单条评论信息"""
+      
         try:
-            hotel_id = hotel_info["酒店ID"]
-            hotel = CtripHotel.get_or_none(hotel_id)
+            user_info = comment_data.get("userInfo", {}) or {}
+            grade_info = user_info.get("gradeInfo", {}) or {}
+            level_info = user_info.get("levelInfo", {}) or {}
 
-            if hotel:
-                # 更新评分信息
-                hotel.update_ratings(
-                    {
-                        "总评分": hotel_info.get("总评分", 0),
-                        "环境评分": hotel_info.get("环境评分", 0),
-                        "设施评分": hotel_info.get("设施评分", 0),
-                        "服务评分": hotel_info.get("服务评分", 0),
-                        "卫生评分": hotel_info.get("卫生评分", 0),
-                        "总评论数": hotel_info.get("总评论数", 0),
-                        "评论标签": hotel_info.get("评论标签", ""),
-                        "好评数": hotel_info.get("好评数", 0),
-                        "差评数": hotel_info.get("差评数", 0),
-                        "好评率": hotel_info.get("好评率", 0),
-                    }
+            comment_info = {
+                "评论ID": str(comment_data.get("id", "")),
+                "用户名": self._clean_text(user_info.get("nickName", "")),
+                "用户等级": level_info.get("name", ""),
+                "点评身份": grade_info.get("title", ""),
+                "评分": comment_data.get("rating", 0),
+                "评论内容": self._clean_text(comment_data.get("content", "")),
+                "入住时间": comment_data.get("checkin", ""),
+                "房型": comment_data.get("roomName", ""),
+                "出行类型": comment_data.get("travelTypeText", ""),
+                "评论来源": self._get_comment_source(comment_data),
+                "有用数": comment_data.get("usefulCount", 0),
+                "IP归属地": comment_data.get("ipLocation", ""),
+                "评论图片": "",
+                "酒店回复": "",
+                "回复时间": "",
+            }
+
+            # 处理评论图片
+            image_urls = []
+            if "imageCuttingsList" in comment_data and comment_data["imageCuttingsList"]:
+                for img in comment_data["imageCuttingsList"]:
+                    # 获取大图URL
+                    big_url = img.get("bigImageUrl", "")
+                    if big_url:
+                        image_urls.append(big_url.split("?")[0])
+                
+                if image_urls:
+                    comment_info["评论图片"] = ",".join(image_urls)
+
+            # 处理酒店回复
+            feedback_list = comment_data.get("feedbackList", [])
+            if (
+                feedback_list
+                and isinstance(feedback_list, list)
+                and len(feedback_list) > 0
+            ):
+                first_feedback = feedback_list[0]
+                comment_info["酒店回复"] = self._clean_text(
+                    first_feedback.get("content", "")
                 )
+                comment_info["回复时间"] = first_feedback.get("createTime", "")
 
-                # 更新AI点评
-                if "AI点评" in hotel_info and "AI详评" in hotel_info:
-                    hotel.update_ai_comments(hotel_info["AI点评"], hotel_info["AI详评"])
-
-                logger.info(f"更新酒店信息成功: {hotel_id}")
-            else:
-                # 创建新酒店
-                hotel = CtripHotel.create_from_api(hotel_info)
-                logger.info(f"创建新酒店成功: {hotel_id}")
-
-            return True
+            logger.info(f"解析评论: {comment_info['评论ID']}")
+            return comment_info
 
         except Exception as e:
-            logger.error(f"保存酒店数据失败: {str(e)}{traceback.format_exc()}")
-            return False
-
-    def save_comment(self, comment: Dict) -> bool:
-        """保存评论数据
-
-        Args:
-            comment: 评论信息字典
-
-        Returns:
-            bool: 保存成功返回True
-        """
-        try:
-            comment_id = comment["评论ID"]
-            hotel_id = comment.get("酒店ID")
-
-            # 获取酒店实例
-            hotel = CtripHotel.get_or_none(hotel_id)
-            if not hotel:
-                logger.error(f"找不到对应的酒店: {hotel_id}")
-                return False
-
-            # 检查评论是否已存在
-            existing_comment = CtripComment.get_or_none(comment_id)
-            if existing_comment:
-                # 更新点赞数
-                existing_comment.update_useful_count(comment.get("有用数", 0))
-                logger.info(f"更新评论成功: {comment_id}")
-            else:
-                # 创建新评论
-                CtripComment.create_from_api(comment, hotel)
-                logger.info(f"创建新评论成功: {comment_id}")
-
-            return True
-
-        except Exception as e:
-            logger.error(f"保存评论数据失败: {str(e)}\n{traceback.format_exc()}")
-            return False
-
-    def save_qa(self, qa: Dict) -> bool:
-        """保存问答数据
-
-        Args:
-            qa: 问答信息字典
-
-        Returns:
-            bool: 保存成功返回True
-        """
-        try:
-            qa_id = qa["问题ID"]
-            hotel_id = qa.get("酒店ID")
-
-            # 获取酒店实例
-            hotel = CtripHotel.get_or_none(hotel_id)
-            if not hotel:
-                logger.error(f"找不到对应的酒店: {hotel_id}")
-                return False
-
-            # 检查问答是否已存在
-            existing_qa = CtripQA.get_or_none(qa_id)
-            if existing_qa:
-                # 更新回复内容和数量
-                existing_qa.replies = qa.get("回答内容", "")
-                existing_qa.reply_count = qa.get("回答数量", 0)
-                existing_qa.save()
-                logger.info(f"更新问答成功: {qa_id}")
-            else:
-                # 创建新问答
-                CtripQA.create_from_api(qa, hotel)
-                logger.info(f"创建新问答成功: {qa_id}")
-
-            return True
-
-        except Exception as e:
-            logger.error(f"保存问答数据失败: {str(e)}\n{traceback.format_exc()}")
-            return False
+            logger.error(f"解析评论信息失败: {str(e)}\n{traceback.format_exc()}")
+            return {}
 
     def _clean_text(self, text: str) -> str:
         """清理文本内容"""
@@ -391,6 +332,211 @@ class CtripSpider(HotelSpiderBase):
         except Exception as e:
             logger.error(f"获取评论来源失败: {str(e)}\n{traceback.format_exc()}")
             return "未知来源"
+
+    def _parse_date(self, date_str: str) -> str:
+        """解析日期字符串"""
+        try:
+            if not date_str:
+                return ""
+            timestamp = int(date_str.split("(")[1].split("+")[0])
+            dt = datetime.fromtimestamp(timestamp / 1000)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception as e:
+            logger.error(f"解析日期失败: {str(e)}\n{traceback.format_exc()}")
+            return date_str
+
+    def save_hotel(self, hotel_info: Dict) -> bool:
+        """保存酒店数据
+        
+        Args:
+            hotel_info: 酒店信息字典
+        Returns:
+            bool: 保存是否成功
+        """
+        try:
+            # 构建数据库字段映射
+            hotel_db_data = {
+                "hotel_id": hotel_info["酒店ID"],
+                "name": hotel_info["酒店名称"],
+                "name_en": hotel_info["酒店英文名称"],
+                "address": hotel_info["详细地址"],
+                "location_desc": hotel_info["位置描述"],
+                "longitude": hotel_info["经度"],
+                "latitude": hotel_info["纬度"],
+                "star": hotel_info["星级"],
+                "tags": hotel_info["酒店标签"],
+                "one_sentence_comment": hotel_info["一句话点评"],
+                "rating_all": hotel_info.get("总评分", 0),
+                "rating_location": hotel_info.get("环境评分", 0),
+                "rating_facility": hotel_info.get("设施评分", 0),
+                "rating_service": hotel_info.get("服务评分", 0),
+                "rating_room": hotel_info.get("卫生评分", 0),
+                "comment_count": hotel_info.get("总评论数", 0),
+                "comment_tags": hotel_info.get("评论标签", ""),
+                "good_comment_count": hotel_info.get("好评数", 0),
+                "bad_comment_count": hotel_info.get("差评数", 0),
+                "good_rate": hotel_info.get("好评率", 0),
+                "ai_comment": hotel_info.get("AI点评", ""),
+                "ai_detailed_comment": hotel_info.get("AI详评", "")
+            }
+
+            # 检查酒店是否存在
+            hotel = CtripHotel.get_by_id_or_none(hotel_db_data["hotel_id"])
+            if hotel:
+                # 如果存在，更新数据
+                return hotel.update_hotel(hotel_db_data)
+            else:
+                # 如果不存在，创建新记录
+                hotel = CtripHotel.create_hotel(hotel_db_data)
+                return hotel is not None
+
+        except Exception as e:
+            logger.error(f"保存酒店数据失败: {str(e)}")
+            return False
+
+    def save_comment(self, comment_info: Dict, hotel_id: str) -> bool:
+        """保存评论数据
+        
+        Args:
+            comment_info: 评论信息字典
+            hotel_id: 酒店ID
+        Returns:
+            bool: 保存是否成功
+        """
+        try:
+            # 获取关联的酒店对象
+            hotel = CtripHotel.get_by_id_or_none(hotel_id)
+            if not hotel:
+                logger.error(f"保存评论失败: 酒店ID {hotel_id} 不存在")
+                return False
+
+            # 构建评论数据库字段映射
+            comment_db_data = {
+                "comment_id": comment_info["评论ID"],
+                "hotel": hotel,
+                "user_name": comment_info["用户名"],
+                "user_level": comment_info["用户等级"],
+                "user_identity": comment_info["点评身份"],
+                "rating": comment_info["评分"],
+                "content": comment_info["评论内容"],
+                "checkin_time": comment_info["入住时间"],
+                "room_type": comment_info["房型"],
+                "travel_type": comment_info["出行类型"],
+                "source": comment_info["评论来源"],
+                "useful_count": comment_info["有用数"],
+                "ip_location": comment_info["IP归属地"],
+                "images": comment_info["评论图片"],
+                "hotel_reply": comment_info["酒店回复"],
+                "reply_time": comment_info["回复时间"]
+            }
+
+            # 检查评论是否已存在
+            existing_comment = CtripComment.get_by_id_or_none(comment_db_data["comment_id"])
+            if existing_comment:
+                # 如果存在，更新数据
+                return existing_comment.update_comment(comment_db_data)
+            else:
+                # 如果不存在，创建新记录
+                new_comment = CtripComment.create_comment(comment_db_data)
+                return new_comment is not None
+
+        except Exception as e:
+            logger.error(f"保存评论数据失败: {str(e)}")
+            return False
+
+    def save_qa(self, qa_info: Dict, hotel_id: str) -> bool:
+        """保存问答数据
+        
+        Args:
+            qa_info: 问答信息字典
+            hotel_id: 酒店ID
+        Returns:
+            bool: 保存是否成功
+        """
+        try:
+            # 获取关联的酒店对象
+            hotel = CtripHotel.get_by_id_or_none(hotel_id)
+            if not hotel:
+                logger.error(f"保存问答失败: 酒店ID {hotel_id} 不存在")
+                return False
+
+            # 构建问答数据库字段映射
+            qa_db_data = {
+                "qa_id": qa_info["问题ID"],
+                "hotel": hotel,
+                "question": qa_info["提问内容"],
+                "ask_time": datetime.strptime(qa_info["提问时间"], "%Y-%m-%d %H:%M:%S"),
+                "asker": qa_info["提问人"],
+                "reply_count": qa_info["回答数量"],
+                "replies": qa_info["回答内容"]
+            }
+
+            # 检查问答是否已存在
+            existing_qa = CtripQA.get_by_id_or_none(qa_db_data["qa_id"])
+            if existing_qa:
+                # 如果存在，更新数据
+                return existing_qa.update_qa(qa_db_data)
+            else:
+                # 如果不存在，创建新记录
+                new_qa = CtripQA.create_qa(qa_db_data)
+                return new_qa is not None
+
+        except Exception as e:
+            logger.error(f"保存问答数据失败: {str(e)}")
+            return False
+
+    def _process_comment_page(self, comment_data: Dict, hotel_id: str) -> int:
+        """处理单页评论数据
+        
+        Args:
+            comment_data: 评论页面数据
+            hotel_id: 酒店ID
+        Returns:
+            int: 成功保存的评论数量
+        """
+        success_count = 0
+        try:
+            comments = self._parse_comments(comment_data)
+            for comment in comments:
+                comment["酒店ID"] = hotel_id
+                if self.save_comment(comment, hotel_id):
+                    success_count += 1
+        except Exception as e:
+            logger.error(f"处理评论页面失败: {str(e)}")
+        return success_count
+
+    def _get_valid_comments(self, hotel_id: str) -> List[Dict]:
+        """获取有效评论用于生成AI点评
+        
+        Args:
+            hotel_id: 酒店ID
+        Returns:
+            List[Dict]: 有效评论列表
+        """
+        try:
+            hotel = CtripHotel.get_by_id_or_none(hotel_id)
+            if not hotel:
+                return []
+            
+            comments = hotel.get_comments()
+            valid_comments = []
+            for comment in comments:
+                if not comment.content:
+                    continue
+                if not comment.rating:
+                    continue
+                if len(comment.content.encode("utf-8")) > 100:
+                    valid_comments.append({
+                        "评论内容": comment.content,
+                        "评分": comment.rating,
+                        "用户名": comment.user_name,
+                        "入住时间": comment.checkin_time,
+                        "房型": comment.room_type
+                    })
+            return valid_comments
+        except Exception as e:
+            logger.error(f"获取有效评论失败: {str(e)}")
+            return []
 
     def _parse_hotel_info(self, hotel_data: Dict) -> Dict:
         """解析酒店基本信息"""
@@ -517,76 +663,7 @@ class CtripSpider(HotelSpiderBase):
         except Exception as e:
             logger.error(f"解析评论数据失败: {str(e)}\n{traceback.format_exc()}")
             return []
-
-    def _parse_comment_info(self, comment_data: Dict) -> Dict:
-        """解析单条评论信息"""
-        try:
-            user_info = comment_data.get("userInfo", {}) or {}
-            grade_info = user_info.get("gradeInfo", {}) or {}
-            level_info = user_info.get("levelInfo", {}) or {}
-
-            comment_info = {
-                "评论ID": str(comment_data.get("id", "")),
-                "用户名": self._clean_text(user_info.get("nickName", "")),
-                "用户等级": level_info.get("name", ""),
-                "点评身份": grade_info.get("title", ""),
-                "评分": comment_data.get("rating", 0),
-                "评论内容": self._clean_text(comment_data.get("content", "")),
-                "入住时间": comment_data.get("checkin", ""),
-                "房型": comment_data.get("roomName", ""),
-                "出行类型": comment_data.get("travelTypeText", ""),
-                "评论来源": self._get_comment_source(comment_data),
-                "有用数": comment_data.get("usefulCount", 0),
-                "IP归属地": comment_data.get("ipLocation", ""),
-                "评论图片": "",
-                "酒店回复": "",
-                "回复时间": "",
-            }
-
-            # 处理评论图片
-            if (
-                "imageCuttingsList" in comment_data
-                and comment_data["imageCuttingsList"]
-            ):
-                image_urls = [
-                    img["bigImageUrl"]
-                    for img in comment_data["imageCuttingsList"]
-                    if img.get("bigImageUrl")
-                ]
-                comment_info["评论图片"] = ",".join(image_urls)
-
-            # 处理酒店回复
-            feedback_list = comment_data.get("feedbackList", [])
-            if (
-                feedback_list
-                and isinstance(feedback_list, list)
-                and len(feedback_list) > 0
-            ):
-                first_feedback = feedback_list[0]
-                comment_info["酒店回复"] = self._clean_text(
-                    first_feedback.get("content", "")
-                )
-                comment_info["回复时间"] = first_feedback.get("createTime", "")
-
-            logger.info(f"解析评论: {comment_info['评论ID']}")
-            return comment_info
-
-        except Exception as e:
-            logger.error(f"解析评论信息失败: {str(e)}\n{traceback.format_exc()}")
-            return {}
-
-    def _parse_date(self, date_str: str) -> str:
-        """解析日期字符串"""
-        try:
-            if not date_str:
-                return ""
-            timestamp = int(date_str.split("(")[1].split("+")[0])
-            dt = datetime.fromtimestamp(timestamp / 1000)
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
-        except Exception as e:
-            logger.error(f"解析日期失败: {str(e)}\n{traceback.format_exc()}")
-            return date_str
-
+    
     def process_hotel(self, hotel_data: Dict) -> bool:
         """处理单个酒店数据"""
         try:
@@ -597,10 +674,7 @@ class CtripSpider(HotelSpiderBase):
 
             hotel_id = hotel_info["酒店ID"]
             
-            # 2. 获取酒店评论
-            comments = []
-            
-            # 获取第一页评论和评分信息
+            # 2. 获取并处理评论数据
             first_page_comments = self.get_hotel_comments(hotel_id, 1)
             if first_page_comments:
                 # 从第一页评论中获取评分信息
@@ -608,78 +682,58 @@ class CtripSpider(HotelSpiderBase):
                 if rating_info:
                     hotel_info.update(rating_info)
                     logger.info(f"获取酒店评分信息: {hotel_info['酒店ID']}")
-                
-                # 解析第一页评论
-                comment_list = self._parse_comments(first_page_comments)
-                if comment_list:
-                    for comment in comment_list:
-                        comment["酒店ID"] = hotel_id
-                    comments.extend(comment_list)
-                
-                # 获取总评论数并处理剩余页面
+
+                # 处理所有评论
                 total_comments = first_page_comments.get("totalCountForPage", 0)
-                if total_comments > 10:  # 如果有更多页
-                    for i in range(2, (total_comments + 9) // 10 + 1):
-                        result = self.get_hotel_comments(hotel_id, i)
-                        if not result:
-                            break
+                if total_comments > 0:
+                    self.total_comments += total_comments
+                    comment_pages = (total_comments + 9) // 10
+                    logger.info(f"开始获取评论: 共 {total_comments} 条，分 {comment_pages} 页")
+                    
+                    # 处理第一页评论
+                    comment_success = self._process_comment_page(first_page_comments, hotel_id)
+                    
+                    # 处理剩余页面
+                    if total_comments > 10:
+                        for page in range(2, comment_pages + 1):
+                            logger.info(f"正在获取第 {page}/{comment_pages} 页评论...")
+                            result = self.get_hotel_comments(hotel_id, page)
+                            if not result:
+                                logger.error(f"获取第 {page} 页评论失败")
+                                break
+                            
+                            page_success = self._process_comment_page(result, hotel_id)
+                            comment_success += page_success
+                            
+                            logger.info(f"第 {page} 页评论处理完成: 成功保存 {page_success} 条")
+                    
+                    self.saved_comments += comment_success
+                    logger.info(f"评论处理完成: 成功保存 {comment_success}/{total_comments} 条")
 
-                        comment_list = self._parse_comments(result)
-                        if not comment_list:
-                            break
-                        for comment in comment_list:
-                            comment["酒店ID"] = hotel_id
-                        comments.extend(comment_list)
-
-            # 3. 获取酒店问答
-            qa_list = self.get_hotel_qa(hotel_id)
-            if qa_list:
-                qa_list = self._parse_qa(qa_list)
-                # 为每条问答添加酒店ID
+            # 3. 获取并处理问答数据
+            qa_data = self.get_hotel_qa(hotel_id)
+            if qa_data:
+                qa_list = self._parse_qa(qa_data)
+                qa_success = 0
                 for qa in qa_list:
                     qa["酒店ID"] = hotel_id
+                    if self.save_qa(qa, hotel_id):
+                        qa_success += 1
+                logger.info(f"问答处理完成: 成功保存 {qa_success}/{len(qa_list)} 条")
 
             # 4. 生成AI点评
-            if comments:
-                # 筛选有效评论：
-                # 1. 评论内容不为空
-                # 2. 评论内容字节长度大于100
-                # 3. 评论内容不能全是标点符号和空格
-                # 4. 评论评分不能为0
-                valid_comments = []
-                for comment in comments:
-                    content = comment.get("评论内容", "")
-                    if not content:  # 跳过空评论
-                        continue
-                        
-                    # 检查评分
-                    if not comment.get("评分", 0):
-                        continue
-                        
-                    if len(content.encode("utf-8")) > 100:
-                        valid_comments.append(comment)
+            if self.saved_comments > 0:
+                valid_comments = self._get_valid_comments(hotel_id)
+                if valid_comments:
+                    try:
+                        hotel_info["AI点评"] = self.ai_generator.generate_comment(hotel_info, valid_comments)
+                        hotel_info["AI详评"] = self.ai_generator.generate_detailed_comment(hotel_info, valid_comments)
+                        logger.info(f"生成AI点评成功: {hotel_id}")
+                    except Exception as e:
+                        logger.error(f"生成AI点评失败: {str(e)}")
 
-                if valid_comments:  # 只在有有效评论时生成AI点评
-                    hotel_info["AI点评"] = self.ai_generator.generate_comment(
-                        hotel_info, valid_comments
-                    )
-                    hotel_info["AI详评"] = self.ai_generator.generate_detailed_comment(
-                        hotel_info, valid_comments
-                    )
-
-            # 5. 保存数据
-            if not self.save_hotel(hotel_info):
-                return False
-
-            for comment in comments:
-                if not self.save_comment(comment):
-                    logger.error(f"保存评论失败: {comment.get('评论ID', '')}")
-            
-            for qa in qa_list:
-                if not self.save_qa(qa):
-                    logger.error(f"保存问答失败: {qa.get('问答ID', '')}")
-
-            return True
+            # 5. 保存酒店数据
+            return self.save_hotel(hotel_info)
 
         except Exception as e:
             logger.error(f"处理酒店数据失败: {str(e)}\n{traceback.format_exc()}")
@@ -697,11 +751,17 @@ class CtripSpider(HotelSpiderBase):
             total_hotels = first_result["data"].get("hotelTotalCount", 0)
             total_pages = (total_hotels + 9) // 10
 
+            logger.info(f"\n{'='*20} 开始数据采集 {'='*20}")
             logger.info(f"总计 {total_hotels} 家酒店，共 {total_pages} 页")
+
+            # 统计变量
+            processed_count = 0
+            success_count = 0
+            failed_count = 0
 
             # 遍历所有页面
             for current_page in range(1, total_pages + 1):
-                logger.info(f"开始获取第 {current_page}/{total_pages} 页酒店列表...")
+                logger.info(f"\n{'='*15} 正在获取第 {current_page}/{total_pages} 页酒店列表 {'='*15}")
 
                 result = self.get_hotel_list(page=current_page)
                 if (
@@ -714,15 +774,42 @@ class CtripSpider(HotelSpiderBase):
 
                 hotels = result["data"]["hotelList"]
                 if not hotels:
+                    logger.warning(f"第 {current_page} 页没有酒店数据")
                     continue
+
+                logger.info(f"第 {current_page} 页共有 {len(hotels)} 家酒店")
 
                 # 处理当前页的所有酒店
                 for hotel_data in hotels:
-                    if self.process_hotel(hotel_data):
-                        logger.info(f"处理酒店成功: {hotel_data.get('name', '')}")
+                    try:
+                        hotel_name = hotel_data.get("hotelName", "未知酒店")
+                        logger.info(f"\n{'='*10} 开始处理酒店: {hotel_name} {'='*10}")
+
+                        if self.process_hotel(hotel_data):
+                            logger.info(f"处理酒店成功: {hotel_name}")
+                            success_count += 1
+                        else:
+                            logger.error(f"处理酒店失败: {hotel_name}")
+                            failed_count += 1
+
+                        processed_count += 1
+                        progress = (processed_count/total_hotels*100)
+                        logger.info(f"\n总进度: {processed_count}/{total_hotels} ({progress:.1f}%)")
+                        logger.info(f"统计: 成功 {success_count} 家，失败 {failed_count} 家，评论 {self.saved_comments}/{self.total_comments} 条")
+
+                    except Exception as e:
+                        logger.error(f"处理酒店数据时出错: {str(e)}\n{traceback.format_exc()}")
+                        failed_count += 1
+                        continue
+
+            logger.info(f"\n{'='*20} 数据采集完成 {'='*20}")
+            logger.info("统计信息:")
+            logger.info(f"酒店: 总数 {total_hotels}，成功 {success_count}，失败 {failed_count}")
+            logger.info(f"评论: 总数 {self.total_comments}，成功保存 {self.saved_comments}")
+            logger.info(f"{'='*50}\n")
 
         except KeyboardInterrupt:
-            logger.info("程序被用户中断")
+            logger.info("\n程序被用户中断")
         except Exception as e:
             logger.error(f"程序执行出错: {str(e)}\n{traceback.format_exc()}")
         finally:
