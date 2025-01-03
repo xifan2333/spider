@@ -1,7 +1,6 @@
 from typing import Dict, List
 from datetime import datetime, timedelta
 import json
-from fake_useragent import UserAgent
 from bs4 import BeautifulSoup
 import traceback
 from api.base import HotelSpiderBase
@@ -54,7 +53,6 @@ class CtripSpider(HotelSpiderBase):
         self.country_id = kwargs.get("country_id")
 
         self.headers = HEADERS.copy()
-        self.headers["User-Agent"] = UserAgent(platforms="mobile").random
 
         # 初始化账号池
         self.account_pool = CtripAccountPool()

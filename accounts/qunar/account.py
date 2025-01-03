@@ -35,8 +35,7 @@ class QunarAccountPool(BaseAccountPool):
             session.headers.update(headers)
             
             # 设置cookies
-            for key, value in cookies.items():
-                session.cookies.set(key, value)
+            self.set_cookies(session, cookies)
             
             # 获取明天和后天的日期
             tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")

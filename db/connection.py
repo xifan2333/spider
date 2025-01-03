@@ -1,7 +1,7 @@
 """数据库连接管理模块"""
 
 from peewee import MySQLDatabase, Model
-from .config import DB_CONFIG
+from config import DB_CONFIG
 
 # 创建数据库连接
 db = MySQLDatabase(

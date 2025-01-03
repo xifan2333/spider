@@ -1,52 +1,20 @@
 import json
 import traceback
 from datetime import datetime, timedelta
-from http.client import RemoteDisconnected
-from typing import Dict
-
-import requests
-from fake_useragent import UserAgent
-from urllib3.exceptions import ProtocolError
+from typing import Dict, List
 
 from accounts.qunar.account import QunarAccountPool
 from api.base import HotelSpiderBase
 from db.models.qunar import QunarComment, QunarHotel, QunarQA
 from proxies.proxy import ProxyPool
 from utils.logger import setup_logger
-from utils.retry.decorators import create_retry_decorator
+from api.decorator import request_decorator
 
 logger = setup_logger(__name__)
 
-# 创建重试装饰器
-retry_with_proxy = create_retry_decorator(
-    platform="qunar",
-    max_attempts=10,
-    min_wait=4,
-    max_wait=10,
-    multiplier=1,
-    exceptions=(
-        requests.exceptions.RequestException,
-        json.JSONDecodeError,
-        RemoteDisconnected,
-        ProtocolError,
-        requests.exceptions.ConnectionError,
-    ),
-    check_empty=True,
-    reraise=False,
-)
-
-
-def request_decorator(func):
-    """请求装饰器,用于统一处理请求前的准备工作"""
-
-    def wrapper(self, *args, **kwargs):
-        # 更新请求前的必要信息
-        self._update_ua()
-        self._update_cookies()
-        self._update_proxy()
-        return func(self, *args, **kwargs)
-
-    return wrapper
+HOTEL_LIST_PAGE_SIZE = 20
+COMMENTS_PAGE_SIZE = 15
+QA_PAGE_SIZE = 15
 
 
 class QunarSpider(HotelSpiderBase):
@@ -75,15 +43,13 @@ class QunarSpider(HotelSpiderBase):
 
         # 设置请求头
         self.headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Content-Type": "application/json;charset=UTF-8",
+            "Content-Type": "application/json; charset=UTF-8",
+            "content-type": "application/json; charset=UTF-8",
             "origin": "https://touch.qunar.com",
             "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en-GB;q=0.7,en;q=0.6",
         }
 
         # 设置随机User-Agent
-        self.headers["User-Agent"] = UserAgent(platforms="mobile").random
         self.session.headers.update(self.headers)
 
         # 初始化代理池
@@ -94,39 +60,6 @@ class QunarSpider(HotelSpiderBase):
         self.account_pool = QunarAccountPool()
         self.current_account = None
 
-        # 初始化代理
-        proxies = self.proxy_pool.get_proxy()
-        if proxies:
-            self.session.proxies = proxies
-            self.current_proxy = proxies.get("http", "").split("@")[-1]
-            logger.info(f"初始代理: {self.current_proxy}")
-        else:
-            logger.error("无法获取初始代理")
-
-    def _update_cookies(self):
-        """更新cookies"""
-        account = self.account_pool.get_account()
-        if not account:
-            raise Exception("没有可用的账号")
-
-        # 更新cookies
-        self.cookies = account["cookies"]
-        self.current_account = account["phone"]
-
-        # 更新请求头中的cookie
-        self.headers["Cookie"] = self.account_pool.get_cookies_str(self.cookies)
-
-        # 更新 headers
-
-        # 更新session headers
-        self.session.headers.update(self.headers)
-        logger.info(f"更新cookies成功: {self.current_account}")
-
-    def _update_ua(self):
-        """更新User-Agent"""
-        self.headers["User-Agent"] = UserAgent(platforms="mobile").random
-
-    @retry_with_proxy
     @request_decorator
     def get_hotel_list(self, page: int = 1) -> Dict:
         """获取酒店列表"""
@@ -142,7 +75,6 @@ class QunarSpider(HotelSpiderBase):
                 "checkOutDate": check_out,
                 "page": page,
             }
-
             response = self.session.post(
                 self.HOTEL_LIST_URL,
                 json=payload,
@@ -150,332 +82,84 @@ class QunarSpider(HotelSpiderBase):
             response.raise_for_status()
             result = response.json()
 
-            if result.get("ret"):
-                data = result.get("data", {})
-                hotels = data.get("hotels", [])
-                parsed_hotels = [self._parse_hotel_item(hotel) for hotel in hotels]
-
-                logger.info(
-                    f"获取酒店列表成功: {self.city} 第 {page} 页, 共 {len(parsed_hotels)} 家酒店"
-                )
-
-                return {
-                    "total": data.get("tcount", 0),
-                    "has_more": data.get("hasMore", False),
-                    "hotels": parsed_hotels,
-                }
-
-            return {}
+            return result
 
         except Exception as e:
             logger.error(f"获取酒店列表失败: {str(e)},{traceback.format_exc()}")
             return {}
 
-    def _parse_hotel_item(self, hotel: Dict) -> Dict:
-        """解析单个酒店数据"""
-        # 获取等级信息
-        level = hotel.get("dangciText", "")
-        medals = []
-        if "newMedalAttrs" in hotel and hotel["newMedalAttrs"]:
-            medals = [
-                attr.get("title", "")
-                for attr in hotel["newMedalAttrs"]
-                if attr.get("title")
-            ]
-
-        # 组合等级信息：所有勋章+档次
-        hotel_level = "/".join(medals + [level]) if medals else level
-
-        # 解析经纬度
-        gpoint = hotel.get("gpoint", "").split(",")
-        latitude = float(gpoint[0]) if len(gpoint) > 0 else None
-        longitude = float(gpoint[1]) if len(gpoint) > 1 else None
-
-        # 获取一句话亮点
-        highlight = ""
-        if "labels" in hotel:
-            for label in hotel["labels"]:
-                if label.get("configCode") == "comment_one_word_hightpoint_label":
-                    highlight = label.get("label", "")
-                    break
-
-        return {
-            "name": hotel.get("name", ""),
-            "id": hotel.get("seqNo", ""),
-            "latitude": latitude,
-            "longitude": longitude,
-            "level": hotel_level,
-            "score": float(hotel.get("score", 0)),
-            "location": hotel.get("locationInfo", ""),
-            "comment_count": int(hotel.get("commentCount", 0)),
-            "highlight": highlight,
-        }
-
-    @retry_with_proxy
     @request_decorator
     def get_hotel_detail(self, hotel_id: str) -> Dict:
         """获取酒店详情"""
-      
-        check_in = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-        check_out = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
+        try:
+            check_in = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            check_out = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
 
-        payload = {
-            "checkInDate": check_in,
-            "checkOutDate": check_out,
-            "seq": hotel_id,
-            "location": "",
-            "cityUrl": self.city_url,
-            "selectedIndex": "0",
-        }
+            payload = {
+                "checkInDate": check_in,
+                "checkOutDate": check_out,
+                "seq": hotel_id,
+                "location": "",
+                "cityUrl": self.city_url,
+                "selectedIndex": "0",
+            }
 
-        response = self.session.post(self.HOTEL_DETAIL_URL, json=payload)
-        response.raise_for_status()
+            response = self.session.post(self.HOTEL_DETAIL_URL, json=payload)
+            response.raise_for_status()
 
-        result = response.json()
-        detail = self._parse_hotel_detail(result)
-
-        # 获取评分信息
-        scores = self._get_hotel_score(hotel_id)
-        if scores:
-            detail.update(scores)
-
-        # 获取交通信息
-        traffic = self._get_hotel_traffic(
-            hotel_id,
-            gpoint=detail.get("gpoint"),
-            hot_poi=detail.get("location_advantage", "")
-            .split("距离")[-1]
-            .split("米")[0],
-        )
-        if traffic:
-            detail["traffic"] = traffic
-
-        self.logger.info(f"获取酒店详情成功: {hotel_id}")
-        return detail
-
-    def _parse_hotel_detail(self, detail: Dict) -> Dict:
-        """解析酒店详情数据"""
-        if not detail.get("ret") or "data" not in detail:
+            result = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"获取酒店详情失败: {str(e)},{traceback.format_exc()}")
             return {}
 
-        data = detail["data"]
-        dinfo = data.get("dinfo", {})
-        comment_info = data.get("commentInfo", {})
-
-        # 解析评论标签
-        comment_tags = []
-        hotel_comment = dinfo.get("hotelCommentModule", {})
-        if hotel_comment:
-            ugc_tags = hotel_comment.get("ugcCommentTags", [])
-            ugc_tags.sort(key=lambda x: int(x.get("tagCount", 0)), reverse=True)
-            comment_tags = [f"{tag['tagDesc']}({tag['tagCount']})" for tag in ugc_tags]
-
-        # 解析榜单信息
-        hot_sale = data.get("hotSaleCard", {})
-        ranking = (
-            f"{hot_sale.get('detailDesc', '')}第{hot_sale.get('top', '')}名"
-            if hot_sale
-            else ""
-        )
-
-        # 解析地点优势
-        location_advantage = ""
-        if dinfo.get("hotPoi") and dinfo.get("hotPoiDistance"):
-            location_advantage = f"距离{dinfo['hotPoi']}{dinfo['hotPoiDistance']}米"
-
-        # 解析设施服务信息
-        facilities = {}
-        for service in data.get("servicePics", []):
-            tag = service.get("tag", "其他")
-            if tag not in facilities:
-                facilities[tag] = []
-            facilities[tag].append(service.get("name", ""))
-
-        # 获取第一个电话号码
-        phone = dinfo.get("phone", "")
-
-        # 获取一句话亮点
-        highlight = ""
-        if "tagGroups" in data and "oneSentenceComment" in data["tagGroups"]:
-            highlight = data["tagGroups"]["oneSentenceComment"].get("title", "")
-
-        return {
-            "address": dinfo.get("add", ""),
-            "open_time": dinfo.get("whenOpen", ""),
-            "renovation_time": dinfo.get("whenFitment", ""),
-            "phone": phone,
-            "comment_tags": " / ".join(comment_tags),
-            "ranking": ranking,
-            "good_rate": comment_info.get("goodRate", ""),
-            "location_advantage": location_advantage,
-            "facilities": facilities,
-            "highlight": highlight,
-            "gpoint": dinfo.get("gpoint", ""),
-        }
-
-    @retry_with_proxy
     @request_decorator
     def get_hotel_comments(self, hotel_id: str, page: int = 1) -> Dict:
         """获取酒店评论"""
+        try:
+            payload = {"seq": hotel_id, "page": page}
 
-        payload = {"seq": hotel_id, "page": page}
+            response = self.session.post(self.COMMENT_URL, json=payload)
+            response.raise_for_status()
 
-        response = self.session.post(self.COMMENT_URL, json=payload)
-        response.raise_for_status()
+            result = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"获取酒店评论失败: {str(e)},{traceback.format_exc()}")
+            return {}
 
-        result = response.json()
-        if result.get("ret"):
-            data = result.get("data", {})
-            comments = data.get("list", [])
-            parsed_comments = [
-                self._parse_comment(comment, hotel_id) for comment in comments
-            ]
-
-            # 更新AI总结（仅在第一页时）
-            if page == 1 and "aiSummary" in data:
-                ai_summary = data["aiSummary"].get("text", {}).get("content", "")
-                if ai_summary:
-                    QunarHotel.update(
-                        ai_summary=ai_summary, updated_at=datetime.now()
-                    ).where(QunarHotel.hotel_id == hotel_id).execute()
-
-            total_count = data.get("count", 0)
-            page_size = data.get("pageSize", 15)
-            total_pages = (total_count + page_size - 1) // page_size
-
-            self.logger.info(f"获取酒店评论成功: {hotel_id} 第 {page}/{total_pages} 页")
-
-            return {
-                "comments": parsed_comments,
-                "total_pages": total_pages,
-                "has_more": page * page_size < total_count,
-            }
-
-        return {}
-
-    def _parse_comment(self, comment: Dict, hotel_id: str) -> Dict:
-        """解析评论数据"""
-        content_data = comment.get("contentData", {})
-
-        # 处理评论图片
-        image_urls = []
-        image_infos = content_data.get("imageInfos", [])
-        if image_infos:
-            for img in image_infos:
-                if img.get("url"):
-                    image_url = f"https://ugcimg.qunarzz.com/imgs/{img['url']}i640.jpg"
-                    image_urls.append(image_url)
-
-        # 处理酒店回复
-        reply_content = ""
-        reply_time = ""
-        replies = comment.get("reply", [])
-        if replies and len(replies) > 0:
-            first_reply = replies[0]
-            reply_content = first_reply.get("content", "")
-            reply_time = first_reply.get("time", "")
-
-        # 解析评论时间
-        feed_time = None
-        if comment.get("feedTime"):
-            feed_time = datetime.fromtimestamp(comment["feedTime"] / 1000)
-
-        return {
-            "comment_id": str(comment.get("feedOid", "")),
-            "hotel_id": hotel_id,
-            "user_name": comment.get("nickName", ""),
-            "rating": float(content_data.get("evaluation", 0)),
-            "content": content_data.get("feedContent", ""),
-            "checkin_time": content_data.get("checkInDate", ""),
-            "room_type": content_data.get("roomType", ""),
-            "travel_type": content_data.get("tripType", ""),
-            "source": content_data.get("from", ""),
-            "ip_location": comment.get("ipLocation", ""),
-            "images": ",".join(image_urls) if image_urls else None,
-            "image_count": len(image_urls),
-            "like_count": content_data.get("stat", {}).get("likeCount", 0),
-            "reply_content": reply_content,
-            "reply_time": reply_time,
-            "feed_time": feed_time,
-        }
-
-    @retry_with_proxy
     @request_decorator
-    def get_hotel_qa(self, hotel_id: str, page: int = 1) -> Dict:
+    def get_hotel_qas(self, hotel_id: str, page: int = 1) -> Dict:
         """获取酒店问答"""
-        payload = {"seq": hotel_id, "page": page, "pageSize": 15}
+        try:
+            payload = {"seq": hotel_id, "page": page, "pageSize": 15}
 
-        payload = {"seq": hotel_id, "page": page, "pageSize": 15}
+            response = self.session.post(self.QA_URL, json=payload)
+            response.raise_for_status()
 
-        response = self.session.post(self.QA_URL, json=payload)
-        response.raise_for_status()
+            result = response.json()
+            return result
+        except Exception as e:
+            logger.error(f"获取酒店问答失败: {str(e)},{traceback.format_exc()}")
+            return {}
 
-        result = response.json()
-        if result.get("ret"):
-            data = result.get("data", {})
-            qa_list = data.get("content", [])
-            parsed_qa = [self._parse_qa(qa, hotel_id) for qa in qa_list]
-
-            total_count = data.get("totalRows", 0)
-            page_size = 15
-            total_pages = (total_count + page_size - 1) // page_size
-
-            self.logger.info(f"获取酒店问答成功: {hotel_id} 第 {page}/{total_pages} 页")
-
-            return {
-                "qa_list": parsed_qa,
-                "total_pages": total_pages,
-                "has_more": page * page_size < total_count,
-            }
-
-        return {}
-
-    def _parse_qa(self, qa: Dict, hotel_id: str) -> Dict:
-        """解析问答数据"""
-        # 处理回答列表
-        answer_list = qa.get("answerList", [])
-        formatted_replies = []
-
-        for idx, answer in enumerate(answer_list, 1):
-            reply_content = answer.get("content", "")
-            if reply_content:
-                formatted_replies.append(f"{idx}. {reply_content}")
-
-        return {
-            "qa_id": str(qa.get("id", "")),
-            "hotel_id": hotel_id,
-            "question": qa.get("title", ""),
-            "ask_time": datetime.strptime(qa.get("createTime", ""), "%Y-%m-%d"),
-            "asker": qa.get("ext1", {}).get("nick", "去哪儿用户"),
-            "reply_count": len(answer_list),
-            "replies": " ".join(formatted_replies) if formatted_replies else None,
-        }
-
-    def _get_hotel_score(self, hotel_id: str) -> Dict:
+    @request_decorator
+    def get_hotel_score(self, hotel_id: str) -> Dict:
         """获取酒店评分"""
         try:
             response = self.session.post(self.SCORE_URL, json={"seq": hotel_id})
             response.raise_for_status()
 
             result = response.json()
-            if result.get("ret") and "data" in result:
-                scores = {}
-                for item in result["data"]:
-                    scores[item["name"]] = item["score"]
-
-                return {
-                    "score_service": float(scores.get("服务", 0)),
-                    "score_location": float(scores.get("位置", 0)),
-                    "score_facility": float(scores.get("设施", 0)),
-                    "score_hygiene": float(scores.get("卫生", 0)),
-                }
+            return result
 
         except Exception as e:
             self.logger.error(f"获取酒店评分失败: {str(e)}")
 
         return {}
 
-    def _get_hotel_traffic(
+    @request_decorator
+    def get_hotel_traffic(
         self, hotel_id: str, gpoint: str = None, hot_poi: str = None
     ) -> Dict:
         """获取酒店交通信息"""
@@ -524,269 +208,415 @@ class QunarSpider(HotelSpiderBase):
             response.raise_for_status()
 
             result = response.json()
-            if result.get("ret") and "data" in result:
-                data = result["data"]["data"]["trafficAround"]["trafficModels"]
-
-                traffic_info = {
-                    "subway": [],
-                    "airport": [],
-                    "railway": [],
-                    "bus": [],
-                    "landmark": [],
-                }
-
-                type_mapping = {
-                    "飞机场": "airport",
-                    "火车站": "railway",
-                    "地铁站": "subway",
-                    "汽车站": "bus",
-                    "地标": "landmark",
-                }
-
-                for item in data:
-                    item_type = type_mapping.get(item.get("name", ""))
-                    if item_type and item_type in traffic_info:
-                        for info in item.get("infos", []):
-                            traffic_info[item_type].append(
-                                {
-                                    "name": info.get("addr", ""),
-                                    "distance": info.get("distanceStr", ""),
-                                }
-                            )
-
-                return traffic_info
-
+            return result
         except Exception as e:
             self.logger.error(f"获取酒店交通信息失败: {str(e)}")
 
         return {}
 
+    def _parse_hotel_item(self, hotel: Dict) -> Dict:
+        """解析单个酒店数据"""
+        # 获取等级信息
+        level = hotel.get("dangciText", "")
+        medals = []
+        if "newMedalAttrs" in hotel and hotel["newMedalAttrs"]:
+            medals = [
+                attr.get("title", "")
+                for attr in hotel["newMedalAttrs"]
+                if attr.get("title")
+            ]
+
+        # 组合等级信息：所有勋章+档次
+        hotel_level = "/".join(medals + [level]) if medals else level
+
+        # 解析经纬度
+        gpoint = hotel.get("gpoint", "").split(",")
+        latitude = float(gpoint[0]) if len(gpoint) > 0 else None
+        longitude = float(gpoint[1]) if len(gpoint) > 1 else None
+
+        # 获取一句话亮点
+        highlight = ""
+        if "labels" in hotel:
+            for label in hotel["labels"]:
+                if label.get("description") == "评论数后一句话标签":
+                    highlight = label.get("label", "")
+                    break
+
+        return {
+            "酒店名称": hotel.get("name", ""),
+            "酒店ID": hotel.get("seqNo", ""),
+            "纬度": latitude,
+            "经度": longitude,
+            "等级": hotel_level,
+            "评分": float(hotel.get("score", 0)),
+            "地址": hotel.get("locationInfo", ""),
+            "评论数": int(hotel.get("commentCount", 0)),
+            "一句话亮点": highlight,
+        }
+
+    def _parse_hotel_detail(self, detail: Dict) -> Dict:
+        """解析酒店详情数据"""
+        if not detail.get("ret") or "data" not in detail:
+            return {}
+
+        data = detail["data"]
+        dinfo = data.get("dinfo", {})
+        comment_info = data.get("commentInfo", {})
+        new_medal_attrs = data.get("newMedalAttrs", [])
+
+        # 解析评论标签
+        comment_tags = []
+        hotel_comment = dinfo.get("hotelCommentModule", {})
+        if hotel_comment:
+            ugc_tags = hotel_comment.get("ugcCommentTags", [])
+            ugc_tags.sort(key=lambda x: int(x.get("tagCount", 0)), reverse=True)
+            comment_tags = [f"{tag['tagDesc']}({tag['tagCount']})" for tag in ugc_tags]
+
+        # 解析榜单信息
+        hot_sale = data.get("hotSaleCard", {})
+        ranking = (
+            f"{hot_sale.get('detailDesc', '')}第{hot_sale.get('top', '')}名"
+            if hot_sale
+            else ""
+        )
+
+        # 解析地点优势
+        location_advantage = ""
+        if dinfo.get("hotPoi") and dinfo.get("hotPoiDistance"):
+            location_advantage = f"距离{dinfo['hotPoi']}{dinfo['hotPoiDistance']}米"
+
+        # 解析设施服务信息
+        facility_texts = []
+        for service in data.get("servicePics", []):
+            tag = service.get("tag", "其他")
+            name = service.get("name", "")
+            if tag and name:
+                facility_texts.append(f"{tag}：{name}")
+
+        # 获取第一个电话号码
+        phone = dinfo.get("phone", "")
+
+        is_platform_choice = False
+        if new_medal_attrs:
+            for medal in new_medal_attrs:
+                if (
+                    medal.get("imgUrl")
+                    == "https://s.qunarzz.com/f_cms/2022/1650508766856_113033638.png"
+                ):
+                    is_platform_choice = True
+                    break
+
+        return {
+            "en_name": dinfo.get("enName", ""),
+            "address": dinfo.get("add", ""),
+            "open_time": dinfo.get("whenOpen", ""),
+            "fitment_time": dinfo.get("whenFitment", ""),
+            "room_count": dinfo.get("rnum", ""),
+            "phone": phone,
+            "comment_tags": " / ".join(comment_tags),
+            "ranking": ranking,
+            "good_rate": comment_info.get("goodRate", ""),
+            "location_advantage": location_advantage,
+            "facilities": " | ".join(facility_texts),
+            "is_platform_choice": is_platform_choice,
+        }
+
+    def _parse_hotel_traffic(self, traffic: Dict) -> Dict:
+        """解析酒店交通信息"""
+        try:
+            if not traffic.get("ret"):
+                return {}
+
+            traffic_data = (
+                traffic.get("data", {})
+                .get("data", {})
+                .get("trafficAround", {})
+                .get("trafficModels", [])
+            )
+            traffic_texts = []
+
+            for model in traffic_data:
+                name = model.get("name", "")
+                infos = model.get("infos", [])
+                if infos:
+                    info_texts = []
+                    for info in infos:
+                        addr = info.get("addr", "")
+                        distance = info.get("distanceStr", "")
+                        if addr and distance:
+                            info_texts.append(f"{addr} {distance}")
+                    if info_texts:
+                        traffic_texts.append(f"{name}：{' / '.join(info_texts)}")
+
+            return {"traffic_info": " | ".join(traffic_texts)}
+        except Exception as e:
+            self.logger.error(f"解析酒店交通信息失败: {str(e)}")
+            return {"traffic_info": ""}
+
+    def _parse_hotel_score(self, score: Dict) -> Dict:
+        """解析酒店评分"""
+        try:
+            score_data = score.get("data", [])
+            score_texts = []
+            for item in score_data:
+                score_texts.append(f"{item['name']}:{item['score']}")
+            return {"detail_score": "/".join(score_texts)}
+        except Exception as e:
+            self.logger.error(f"解析酒店评分失败: {str(e)}")
+            return {"detail_score": ""}
+
+    def parse_comment(self, comment: Dict, hotel_id: str) -> Dict:
+        """解析评论数据"""
+        feed_id = comment.get("feedOid", "")
+        content_data = comment.get("contentData", {})
+
+        # 处理评论图片
+        image_urls = []
+        image_infos = content_data.get("imageInfos", [])
+        if image_infos:
+            for img in image_infos:
+                if img.get("url"):
+                    image_url = f"https://ugcimg.qunarzz.com/imgs/{img['url']}i640.jpg"
+                    image_urls.append(image_url)
+
+        # 处理酒店回复
+        reply_content = ""
+        reply_time = ""
+        replies = comment.get("reply", [])
+        if replies and len(replies) > 0:
+            first_reply = replies[0]
+            reply_content = first_reply.get("content", "")
+            reply_time = first_reply.get("time", "")
+
+        # 解析评论时间
+        feed_time = None
+        if comment.get("feedTime"):
+            feed_time = datetime.fromtimestamp(comment["feedTime"] / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+        return {
+            "评论ID": feed_id,
+            "酒店ID": hotel_id,
+            "用户名": comment.get("nickName", ""),
+            "评分": float(content_data.get("evaluation", 0)),
+            "内容": content_data.get("feedContent", ""),
+            "入住时间": content_data.get("checkInDate", ""),
+            "房型": content_data.get("roomType", ""),
+            "出行类型": content_data.get("tripType", ""),
+            "来源": content_data.get("from", ""),
+            "IP地址": comment.get("ipLocation", ""),
+            "图片": ",".join(image_urls) if image_urls else None,
+            "图片数量": len(image_urls),
+            "点赞数": content_data.get("stat", {}).get("likeCount", 0),
+            "回复内容": reply_content,
+            "回复时间": reply_time,
+            "评论时间": feed_time,
+        }
+
+    def parse_qa(self, qa: Dict, hotel_id: str) -> List[Dict]:
+        """解析问答数据"""
+        qa_records = []
+
+        # 基础问题信息
+        base_qa = {
+            "qa_id": str(qa.get("id", "")),
+            "hotel": hotel_id,
+            "question": qa.get("title", ""),
+            "asker_nickname": qa.get("ext1", {}).get("nick", ""),
+            "ask_time": qa.get("createTime", ""),
+            "answer_count": qa.get("answerCount", 0),
+            "question_source": qa.get("faqSourceText", ""),
+        }
+
+        # 处理回答列表
+        answer_list = qa.get("answerList", [])
+        if not answer_list:
+            # 如果没有回答，仍然保存问题记录
+            qa_records.append(
+                {
+                    **base_qa,
+                    "answer_id": "",
+                    "answerer_nickname": "",
+                    "answer_time": "",
+                    "answer_content": "",
+                    "is_official": False,
+                }
+            )
+        else:
+            # 每个回答生成一条记录
+            for answer in answer_list:
+                qa_record = {
+                    **base_qa,
+                    "answer_id": str(answer.get("id", "")),
+                    "answerer_nickname": answer.get("userNick", ""),
+                    "answer_time": answer.get("createTime", ""),
+                    "answer_content": answer.get("content", ""),
+                    "is_official": answer.get("isOfficialAnswer", False),
+                }
+                qa_records.append(qa_record)
+
+        return qa_records
+
     def save_hotel(self, hotel_info: Dict) -> bool:
         """保存酒店数据"""
-        try:
-            # 基本信息
-            data = {
-                "hotel_id": hotel_info["id"],
-                "name": hotel_info["name"],
-                "level": hotel_info["level"],
-                "location": hotel_info["location"],
-                "longitude": str(hotel_info["longitude"]),
-                "latitude": str(hotel_info["latitude"]),
-                "score": hotel_info["score"],
-                "comment_count": hotel_info["comment_count"],
-                "highlight": hotel_info["highlight"],
-                "updated_at": datetime.now(),
-            }
-
-            # 详情信息
-            if "address" in hotel_info:
-                data.update(
-                    {
-                        "address": hotel_info["address"],
-                        "open_time": hotel_info["open_time"],
-                        "renovation_time": hotel_info["renovation_time"],
-                        "phone": hotel_info["phone"],
-                        "comment_tags": hotel_info["comment_tags"],
-                        "ranking": hotel_info["ranking"],
-                        "good_rate": hotel_info["good_rate"],
-                        "location_advantage": hotel_info["location_advantage"],
-                    }
-                )
-
-            # 设施信息
-            if "facilities" in hotel_info:
-                facility_list = []
-                for category, items in hotel_info["facilities"].items():
-                    if items:
-                        facility_list.append(f"{category}：{' / '.join(items)}")
-                data["facilities"] = (
-                    " | ".join(facility_list) if facility_list else None
-                )
-
-            # 评分信息
-            if "score_service" in hotel_info:
-                data.update(
-                    {
-                        "score_service": hotel_info["score_service"],
-                        "score_location": hotel_info["score_location"],
-                        "score_facility": hotel_info["score_facility"],
-                        "score_hygiene": hotel_info["score_hygiene"],
-                    }
-                )
-
-            # 交通信息
-            if "traffic" in hotel_info:
-                traffic_list = []
-                type_names = {
-                    "subway": "地铁",
-                    "airport": "机场",
-                    "railway": "火车站",
-                    "bus": "汽车站",
-                    "landmark": "地标",
-                }
-
-                for traffic_type, type_name in type_names.items():
-                    items = hotel_info["traffic"].get(traffic_type, [])
-                    if items:
-                        info_list = [
-                            f"{item['name']}({item['distance']})" for item in items
-                        ]
-                        traffic_list.append(f"{type_name}：{' / '.join(info_list)}")
-
-                data["traffic"] = " | ".join(traffic_list) if traffic_list else None
-
-            # 使用update_or_create而不是replace
-            hotel_id = data.pop("hotel_id")  # 从数据中移除hotel_id
-            QunarHotel.update(**data).where(QunarHotel.hotel_id == hotel_id).execute()
-
-            # 如果酒店不存在，则创建
-            if not QunarHotel.select().where(QunarHotel.hotel_id == hotel_id).exists():
-                data["hotel_id"] = hotel_id  # 添加回hotel_id
-                QunarHotel.create(**data)
-
-            self.logger.info(f"保存酒店数据成功: {hotel_info['name']}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"保存酒店数据失败: {str(e)}")
-            return False
+        pass
 
     def save_comment(self, comment_info: Dict) -> bool:
         """保存评论数据"""
-        try:
-            comment_id = comment_info.pop("comment_id")
-            hotel_id = comment_info.pop("hotel_id")
-
-            # 获取酒店实例
-            hotel = QunarHotel.get_by_id(hotel_id)
-            comment_info["hotel"] = hotel
-
-            # 更新或创建评论
-            comment, created = QunarComment.get_or_create(
-                comment_id=comment_id, defaults=comment_info
-            )
-
-            if not created:
-                # 如果评论已存在，更新数据
-                for key, value in comment_info.items():
-                    setattr(comment, key, value)
-                comment.save()
-
-            self.logger.info(f"保存评论数据成功: {comment_id}")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"保存评论数据失败: {str(e)}")
-            return False
+        pass
 
     def save_qa(self, qa_info: Dict) -> bool:
         """保存问答数据"""
-        try:
-            qa_id = qa_info.pop("qa_id")
-            hotel_id = qa_info.pop("hotel_id")
+        pass
 
-            # 获取酒店实例
-            hotel = QunarHotel.get_by_id(hotel_id)
-            qa_info["hotel"] = hotel
+    def process_hotels(self, hotel_list_response: Dict):
+        """处理酒店列表数据"""
+        hotel_list = hotel_list_response.get("data", {}).get("hotels", [])
+        total_hotels = len(hotel_list)
+        
+       
+        
+        for index, hotel in enumerate(hotel_list, 1):
+            hotel_id = hotel["seqNo"]
+            logger.info(f"正在处理第{index}/{total_hotels}家酒店: {hotel_id}")
+            
+            try:
+                # 1. 处理酒店基础信息
+                base_info = self._parse_hotel_item(hotel)
+                logger.debug(f"获取酒店基础信息成功: {hotel_id}")
+                
+                # 2. 处理酒店详情
+                detail_info = self.get_hotel_detail(hotel_id)
+                detail_info = self._parse_hotel_detail(detail_info)
+                logger.debug(f"获取酒店详情成功: {hotel_id}")
+                
+                # 3. 处理评分信息
+                score_info = self.get_hotel_score(hotel_id)
+                score_info = self._parse_hotel_score(score_info)
+                logger.debug(f"获取酒店评分成功: {hotel_id}")
+                
+                # 4. 处理交通信息
+                traffic_info = self.get_hotel_traffic(hotel_id)
+                traffic_info = self._parse_hotel_traffic(traffic_info)
+                logger.debug(f"获取酒店交通信息成功: {hotel_id}")
 
-            # 更新或创建问答
-            qa, created = QunarQA.get_or_create(qa_id=qa_id, defaults=qa_info)
+                # 合并所有酒店信息
+                info = {**base_info, **detail_info, **score_info, **traffic_info}
 
-            if not created:
-                # 如果问答已存在，更新数据
-                for key, value in qa_info.items():
-                    setattr(qa, key, value)
-                qa.save()
+                # 5. 处理AI点评
+                first_page_comments = self.get_hotel_comments(hotel_id, 1)
+                comments_counts = first_page_comments.get("data", {}).get("count", 0)
 
-            self.logger.info(f"保存问答数据成功: {qa_id}")
-            return True
+                try:
+                    aiSummary = first_page_comments.get("data", {}).get("aiSummary", {})
+                    aiSummary_text = aiSummary.get("text", {}).get("content", "")
+                    aiSummary_album = aiSummary.get("album", {}).get("imageCovers", [])
+                    aiSummary_image_urls = ",".join(
+                        [image.get("url", "") for image in aiSummary_album]
+                    )
+                    logger.debug(f"解析AI点评成功: {hotel_id}")
+                except Exception as e:
+                    logger.error(f"解析AI点评失败: {hotel_id}, {str(e)}")
+                    aiSummary_text = ""
+                    aiSummary_image_urls = ""
 
-        except Exception as e:
-            self.logger.error(f"保存问答数据失败: {str(e)}")
-            return False
+                info["AI点评"] = aiSummary_text if aiSummary_text else ""
+                info["AI点评图片"] = aiSummary_image_urls if aiSummary_image_urls else ""
 
-    def _process_comments(self, hotel_id: str):
-        """处理酒店评论数据"""
-        try:
-            current_page = 1
+                
 
-            while True:
-                # 获取当前页评论
-                result = self.get_hotel_comments(hotel_id, current_page)
-                if not result:
-                    break
+                
 
-                # 保存评论
-                comments = result["comments"]
-                for comment in comments:
-                    self.save_comment(comment)
+                # 6. 保存酒店信息
+                hotel_model = QunarHotel.get_by_id_or_none(hotel_id)
+                if hotel_model:
+                    hotel_model.update_hotel(info)
+                    logger.info(f"更新酒店信息成功: {hotel_id}")
+                else:
+                    QunarHotel.create_hotel(info)
+                    logger.info(f"创建酒店信息成功: {hotel_id}")
 
-                self.logger.info(
-                    f"处理酒店评论完成: {hotel_id}, 第 {current_page}/{result['total_pages']} 页"
-                )
+                # 7. 处理评论数据
+                # total_pages = (comments_counts + COMMENTS_PAGE_SIZE - 1) // COMMENTS_PAGE_SIZE
+                # logger.info(f"开始处理酒店评论, 共{total_pages}页: {hotel_id}")
 
-                # 检查是否还有下一页
-                if not result["has_more"]:
-                    break
+                # for page in range(1, total_pages + 1):
+                #     logger.debug(f"正在处理第{page}/{total_pages}页评论: {hotel_id}")
+                    
+                #     if page == 1:
+                #         comments = first_page_comments
+                #     else:
+                #         comments = self.get_hotel_comments(hotel_id, page)
 
-                current_page += 1
+                #     comments_list = comments.get("data", {}).get("list", [])
+                #     for comment_data in comments_list:
+                #         try:
+                #             comment_info = self.parse_comment(comment_data, hotel_id)
+                #             comment_id = comment_info["评论ID"]
+                            
+                            
+                #             comment_model = QunarComment.get_by_id_or_none(comment_id)
+                #             if comment_model:
+                #                 comment_model.update_comment(comment_info)
+                #                 logger.debug(f"更新评论成功: {comment_id}")
+                #             else:
+                #                 QunarComment.create_comment(comment_info)
+                #                 logger.debug(f"创建评论成功: {comment_id}")
+                #         except Exception as e:
+                #             logger.error(f"处理评论失败: {str(e)}")
 
-        except Exception as e:
-            self.logger.error(f"处理酒店评论出错: {str(e)}")
-            return False
+                # 8. 处理问答数据
+                first_page_qas = self.get_hotel_qas(hotel_id, 1)
+                qas_counts = first_page_qas.get("data", {}).get("totalRows", 0)
+                total_pages = (qas_counts + QA_PAGE_SIZE - 1) // QA_PAGE_SIZE
+                
+                logger.info(f"开始处理酒店问答, 共{total_pages}页: {hotel_id}")
 
-        return True
+                for page in range(1, total_pages + 1):
+                    logger.debug(f"正在处理第{page}/{total_pages}页问答: {hotel_id}")
+                    
+                    if page == 1:
+                        qas = first_page_qas
+                    else:
+                        qas = self.get_hotel_qas(hotel_id, page)
+                        
+                    if qas.get("data", {}).get("content", []):
+                        content = qas.get("data", {}).get("content", [])
+                        for qa_item in content:
+                            try:
+                                qa_records = self.parse_qa(qa_item, hotel_id)
+                                for qa_info in qa_records:
+                                    qa_id = qa_info["qa_id"]
+                                    
+                                    qa_model = QunarQA.get_by_id_or_none(qa_id)
+                                    if qa_model:
+                                        qa_model.update_qa(qa_info)
+                                        logger.debug(f"更新问答成功: {qa_id}")
+                                    else:
+                                        QunarQA.create_qa(qa_info)
+                                        logger.debug(f"创建问答成功: {qa_id}")
+                            except Exception as e:
+                                logger.error(f"处理问答失败: {str(e)}")
+                    
+                logger.info(f"完成处理第{index}/{total_hotels}家酒店: {hotel_id}")
+                
+            except Exception as e:
+                logger.error(f"处理酒店数据失败: {hotel_id}, {str(e)}")
+                continue
 
-    def _process_qa(self, hotel_id: str):
-        """处理酒店问答数据"""
-        try:
-            current_page = 1
+        logger.info(f"完成处理所有{total_hotels}家酒店数据")
 
-            while True:
-                # 获取当前页问答
-                result = self.get_hotel_qa(hotel_id, current_page)
-                if not result:
-                    break
-
-                # 保存问答
-                qa_list = result["qa_list"]
-                for qa in qa_list:
-                    self.save_qa(qa)
-
-                self.logger.info(
-                    f"处理酒店问答完成: {hotel_id}, 第 {current_page}/{result['total_pages']} 页"
-                )
-
-                # 检查是否还有下一页
-                if not result["has_more"]:
-                    break
-
-                current_page += 1
-
-        except Exception as e:
-            self.logger.error(f"处理酒店问答出错: {str(e)}")
-            return False
-
-        return True
-
-    def _update_proxy(self):
-        """更新代理"""
-        try:
-            proxies = self.proxy_pool.get_proxy()
-            if proxies and isinstance(proxies, dict):
-                self.session.proxies = proxies
-                self.current_proxy = proxies.get("http", "").split("@")[-1]
-                logger.info(f"更新代理成功: {self.current_proxy}")
+    def run(self):
+        first_page = self.get_hotel_list(1)
+        total_count = first_page.get("data", {}).get("tcount", 0)
+        total_pages = (total_count + HOTEL_LIST_PAGE_SIZE - 1) // HOTEL_LIST_PAGE_SIZE
+        logger.info(f"开始处理酒店列表, 共{total_pages}页")
+        for page in range(1, total_pages + 1):
+            if page == 1:
+                hotel_list_response = first_page
             else:
-                # 如果获取不到代理，清空当前代理设置
-                self.session.proxies = {}
-                self.current_proxy = None
-                logger.warning("无法获取代理，已清空代理设置")
-        except Exception as e:
-            logger.error(f"更新代理失败: {str(e)}")
-            # 出错时也清空代理设置
-            self.session.proxies = {}
-            self.current_proxy = None
+                hotel_list_response = self.get_hotel_list(page)
+            logger.info(f"正在处理第{page}/{total_pages}页酒店列表")
+            self.process_hotels(hotel_list_response)
 
 
 def main():

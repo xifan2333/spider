@@ -3,6 +3,7 @@ import urllib3
 import time
 from typing import Optional, Dict
 from utils.logger import setup_logger
+from config import PROXY_CONFIG
 
 # 禁用SSL警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -10,7 +11,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = setup_logger(__name__)
 
 class ProxyPool:
-    def __init__(self, api_url: str = "https://share.proxy.qg.net/get?key=B1B410A0&num=1&area=&isp=0&format=txt&seq=\r\n&distinct=false"):
+    def __init__(self, api_url: str = PROXY_CONFIG['api_url']):
         """初始化代理提取器
         
         Args:
@@ -23,8 +24,8 @@ class ProxyPool:
         self.cached_formatted_proxy = None  # 缓存的格式化代理
         
         # 认证信息
-        self.auth_key = "B1B410A0"
-        self.password = "3C8F346A2F1F"
+        self.auth_key = PROXY_CONFIG['auth_key']
+        self.password = PROXY_CONFIG['password']
         
         # 测试配置
         self.test_url = "http://httpbin.org/ip"  # 使用httpbin测试

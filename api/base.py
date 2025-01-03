@@ -55,7 +55,8 @@ class HotelSpiderBase(ABC):
         self.current_account = account["phone"]
 
         # 更新请求头中的cookie
-        self.headers["Cookie"] = self.account_pool.get_cookies_str(self.cookies)
+        self.headers["Cookie"] = account["cookies"]
+        self.session.headers.update(self.headers)
 
     
     def update_proxy(self):
@@ -75,6 +76,7 @@ class HotelSpiderBase(ABC):
     def update_ua(self):
         """更新User-Agent"""
         self.headers["User-Agent"] = UserAgent(platforms="mobile").random
+        self.session.headers.update(self.headers)
 
   
     def get_hotel_list(self, page: int = 1) -> Dict:

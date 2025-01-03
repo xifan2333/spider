@@ -63,7 +63,13 @@ class ElongHotel(BaseModel):
         """更新酒店"""
         try:
             data['updated_at'] = datetime.now()
-            for key, value in data.items():
+            # 过滤掉空值和空字符串
+            update_data = {
+                key: value for key, value in data.items() 
+                if value is not None and value != ""
+            }
+            
+            for key, value in update_data.items():
                 setattr(self, key, value)
             self.save()
             return True
@@ -113,7 +119,13 @@ class ElongComment(BaseModel):
         """更新评论"""
         try:
             data['updated_at'] = datetime.now()
-            for key, value in data.items():
+            # 过滤掉空值和空字符串
+            update_data = {
+                key: value for key, value in data.items() 
+                if value is not None and value != ""
+            }
+            
+            for key, value in update_data.items():
                 setattr(self, key, value)
             self.save()
             return True
